@@ -12,3 +12,4 @@
 #SBATCH --mail-user=edlu@itu.dk
 #SBATCH --mail-type=FAIL
 
+python ./data/vggsound_download.py

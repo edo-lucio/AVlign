@@ -12,8 +12,12 @@
 #SBATCH --mail-user=edlu@itu.dk
 #SBATCH --mail-type=FAIL
 
+MODE=${1:-"video"}
+
 PROJECT_DIR="$HOME/flowting-gwot"
 ENV_PATH="/home/edlu/miniconda3-25-5-1-1/envs/gwot"
 source "$PROJECT_DIR/jobs/_header.sh"
 
-python ./data/preprocess_audio.py
+cd $PROJECT_DIR
+
+python ./data/preprocess_$MODE.py
