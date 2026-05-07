@@ -17,7 +17,7 @@ MODE=${1:-"video"}
 set -e
 set -x
 
-PROJECT_DIR="$HOME/flowting-gwot"
+PROJECT_DIR="$HOME/flowting-fgw-v2a"
 ENV_PATH="/home/edlu/miniconda3-25-5-1-1/envs/gwot"
 CONDA_BIN="/opt/itu/easybuild/software/Miniconda3/25.5.1-1/bin/conda"
 
