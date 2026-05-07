@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mma_extract
+#SBATCH --job-name=extract
 #SBATCH --output=logs/extract_%j.out
 #SBATCH --error=logs/extract_%j.err
 #SBATCH --nodes=1
