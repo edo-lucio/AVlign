@@ -1,0 +1,47 @@
+#!/bin/bash
+#SBATCH --job-name=fgw_experiments
+#SBATCH --output=logs/fgw_experiments_%j.out
+#SBATCH --error=logs/fgw_experiments_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=4:00:00
+#SBATCH --partition=acltr
+#SBATCH --gres=gpu:1
+#SBATCH --mail-user=edlu@itu.dk
+#SBATCH --mail-type=FAIL
+
+N=${1:-200}
+ALPHA=${2:-0.5}
+SEED=${3:-0}
+# Distinct per-(n, alpha, seed) so concurrent sweep jobs don't clobber each other.
+OUT="${4:-fgw_validation/data/results/fgw_n${N}_a${ALPHA}_s${SEED}.json}"
+
+set -e
+set -x
+
+# --- 1. Environment & Path Definitions ---
+PROJECT_DIR="$HOME/flowting-fgw-v2a"
+ENV_PATH="/home/edlu/miniconda3-25-5-1-1/envs/gwot"
+CONDA_BIN="/opt/itu/easybuild/software/Miniconda3/25.5.1-1/bin/conda"
+
+# --- 2. Load System Modules ---
+module load CUDA/12.1.1
+module load NCCL/2.18.3-GCCcore-12.3.0-CUDA-12.1.1
+module load Miniconda3/25.5.1-1
+source /opt/itu/easybuild/software/Miniconda3/25.5.1-1/etc/profile.d/conda.sh
+conda activate "$ENV_PATH"
+cd "$PROJECT_DIR"
+
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+# Runs all 64 (image × audio × text-bridge × cost × caption_agg) combinations
+# of the FGW alignment and saves transport plans for downstream eval.
+mkdir -p "$(dirname "$OUT")"
+python -m fgw_validation.fgw_text_bridge \
+    --n "$N" \
+    --alpha "$ALPHA" \
+    --seed "$SEED" \
+    --save_plans \
+    --out "$OUT"
