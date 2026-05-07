@@ -1,0 +1,14 @@
+torch>=2.1
+torchaudio>=2.1
+transformers>=4.40
+descript-audio-codec>=1.0
+POT>=0.9.4
+torchdiffeq>=0.2.4
+einops>=0.7
+pyyaml>=6.0
+numpy>=1.24
+soundfile>=0.12
+tqdm>=4.65
+av>=11.0
+pillow>=10.0
+scikit-learn>=1.3

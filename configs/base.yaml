@@ -1,0 +1,68 @@
+# Base config. Loss mode is selected via --mode {cfm, infonce, fgw} on the cli,
+# overriding the `loss.mode` field below.
+
+run_name: b3_fgw
+seed: 0
+device: cuda
+amp: true
+
+data:
+  shard_dir: data/cache/shards            # one .pt per clip (preprocessed)
+  manifest: data/cache/manifest.json       # produced by preprocess scripts
+  class_text_clap: data/cache/class_text_clap.pt   # (309, 512)
+  num_workers: 4
+
+  # NOTE: audio_latent_dim must match what your DAC variant produces. Stock
+  # DAC-44k returns 1024-dim continuous latents. Spec says 64; either configure
+  # DAC accordingly or add a 1024->64 projection in preprocess_audio.py.
+  audio_latent_dim: 1024
+  audio_seq_len: 860                       # 10s at DAC-44k (~86 fps)
+
+  clip_dim: 768                            # CLIP ViT-L/14 pooled
+  clap_dim: 512
+
+batch:
+  size: 64
+  classes_per_batch: 8
+  per_class: 8                             # 8 * 8 = 64
+
+model:
+  d_model: 512
+  n_blocks: 6
+  n_heads: 8
+  d_ffn: 2048
+  dropout: 0.0
+  proj_hidden: 1024                        # MLP_v / MLP_a hidden dim
+  proj_out: 512                            # FGW cost-matrix dim
+
+train:
+  total_steps: 150000
+  warmup_steps: 1000                       # optimizer warmup (LR)
+  lr: 1.0e-4
+  weight_decay: 1.0e-2
+  grad_clip: 1.0
+  log_every: 100
+  ckpt_every: 5000
+  ckpt_dir: runs
+
+# Loss-mode selector + per-mode hyperparameters
+loss:
+  mode: fgw                                # {cfm, infonce, fgw}
+
+  infonce:
+    tau: 0.07
+
+  fgw:
+    alpha: 0.5
+    sinkhorn_eps: 0.05
+    sinkhorn_iter: 50
+    n_outer: 5
+    lambda_target: 1.0e-2                  # swept in {1e-3, 1e-2, 1e-1}
+    fgw_warmup_end: 20000                  # steps before any FGW
+    fgw_ramp_end: 30000                    # linear ramp from 1e-3 -> lambda_target
+    lambda_ramp_start: 1.0e-3
+    log_plan_every: 500                    # H(T) logging frequency
+
+infer:
+  ode_steps: 100
+  ode_solver: euler                        # {euler, dopri5}
