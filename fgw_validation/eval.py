@@ -33,6 +33,7 @@ Metrics per combination (with hard match π(i) = argmax_j T[i, j]):
 CLI:
     python -m fgw_validation.eval
     python -m fgw_validation.eval --results path/to/fgw_results.json
+    python -m fgw_validation.eval --results path/to/results/*.json   # sweep
 """
 import argparse
 import functools
@@ -205,26 +206,12 @@ def _evaluate_combo(combo, plan_dir, emb_root, splits, n_triplets, ks, rng):
 
 # ─── main ───────────────────────────────────────────────────────────────────
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default="fgw_validation/data/fgw_results.json")
-    ap.add_argument("--plans",   default=None,
-                    help="Default: <results stem>_plans/ next to --results")
-    ap.add_argument("--emb",     default="fgw_validation/data/embeddings")
-    ap.add_argument("--out",     default=None,
-                    help="Default: fgw_eval.json next to --results")
-    ap.add_argument("--n_triplets", type=int, default=2000)
-    ap.add_argument("--ks",         type=int, nargs="+", default=[1, 5, 10])
-    ap.add_argument("--seed",       type=int, default=0)
-    args = ap.parse_args()
-
-    results_path = Path(args.results)
+def _evaluate_one(results_path: Path, args) -> Path:
     plan_dir = (Path(args.plans) if args.plans
                 else results_path.parent / (results_path.stem + "_plans"))
-    out_path = Path(args.out) if args.out else results_path.parent / "fgw_eval.json"
+    out_path = (Path(args.out) if args.out
+                else results_path.parent / f"{results_path.stem}_eval.json")
 
-    if not results_path.exists():
-        raise SystemExit(f"results file not found: {results_path}")
     if not plan_dir.exists():
         raise SystemExit(
             f"plan directory not found: {plan_dir}\n"
@@ -240,7 +227,7 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     enriched = []
-    for combo in tqdm(combos, desc="eval"):
+    for combo in tqdm(combos, desc=f"eval {results_path.name}"):
         try:
             enriched.append(_evaluate_combo(
                 combo, plan_dir, emb_root, splits,
@@ -256,6 +243,39 @@ def main():
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[save] {out_path}  ({len(enriched)} rows)")
+    return out_path
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--results", nargs="+",
+                    default=["fgw_validation/data/fgw_results.json"],
+                    help="One or more results JSON files (shell globs OK).")
+    ap.add_argument("--plans",   default=None,
+                    help="Plans dir (only valid with one --results); "
+                         "default: <stem>_plans/ next to each results file")
+    ap.add_argument("--emb",     default="fgw_validation/data/embeddings")
+    ap.add_argument("--out",     default=None,
+                    help="Output path (only valid with one --results); "
+                         "default: <stem>_eval.json next to each results file")
+    ap.add_argument("--n_triplets", type=int, default=2000)
+    ap.add_argument("--ks",         type=int, nargs="+", default=[1, 5, 10])
+    ap.add_argument("--seed",       type=int, default=0)
+    args = ap.parse_args()
+
+    # Drop already-evaluated outputs in case the user globbed them in.
+    paths = [Path(p) for p in args.results
+             if not p.endswith("_eval.json") and not p.endswith("/fgw_eval.json")]
+    missing = [p for p in paths if not p.exists()]
+    if missing:
+        raise SystemExit("results file(s) not found: " + ", ".join(map(str, missing)))
+    if not paths:
+        raise SystemExit("no results files to evaluate (after filtering *_eval.json)")
+    if (args.plans or args.out) and len(paths) > 1:
+        raise SystemExit("--plans/--out require exactly one --results file")
+
+    for p in paths:
+        _evaluate_one(p, args)
 
 
 if __name__ == "__main__":

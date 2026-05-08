@@ -32,5 +32,9 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 # Evaluates each combination's transport plan: semantic recall@k against
 # held-out caption encoders, structural distance correlations, triplet
 # preservation, and transport plan stats. Reads fgw_results.json + plans/.
+# RESULTS_GLOB matches every fgw_*.json the experiments sweep produced; the
+# script filters out *_eval.json so re-runs don't re-evaluate prior outputs.
+RESULTS_GLOB="${RESULTS_GLOB:-fgw_validation/data/results/fgw_*.json}"
 python -m fgw_validation.eval \
-    --emb "${EMB_DIR:-data/embeddings}"
+    --emb "${EMB_DIR:-data/embeddings}" \
+    --results $RESULTS_GLOB
