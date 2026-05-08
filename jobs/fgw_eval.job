@@ -32,4 +32,5 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 # Evaluates each combination's transport plan: semantic recall@k against
 # held-out caption encoders, structural distance correlations, triplet
 # preservation, and transport plan stats. Reads fgw_results.json + plans/.
-python -m fgw_validation.eval
+python -m fgw_validation.eval \
+    --emb "${EMB_DIR:-data/embeddings}"

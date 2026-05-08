@@ -42,5 +42,6 @@ python -m fgw_validation.fgw_text_bridge \
     --n "$N" \
     --alpha "$ALPHA" \
     --seed "$SEED" \
+    --emb_dir "${EMB_DIR:-data/embeddings}" \
     --save_plans \
     --out "$OUT"

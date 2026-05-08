@@ -32,4 +32,6 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 # Encodes Flickr8k + Clotho with all 6 encoders (CLIP, DINOv2, CLAP, AST,
 # RoBERTa, T5). Skips any embedding file already on disk; pass --overwrite
 # to force recomputation.
-python fgw_validation/encode.py
+python fgw_validation/encode.py \
+    --data_root "${DATA_ROOT:-fgw_validation/data}" \
+    --out_dir   "${EMB_DIR:-${DATA_ROOT:-fgw_validation/data}/embeddings}"

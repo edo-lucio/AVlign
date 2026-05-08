@@ -31,3 +31,6 @@ __all__ = [
     "build_encoder",
     "MODEL_IDS",
 ]
+# cka is imported as a submodule (`from fgw_validation.cka import ...`)
+# rather than re-exported here, so `python -m fgw_validation.cka` doesn't
+# trigger the runpy double-import warning.
