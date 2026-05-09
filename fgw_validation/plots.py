@@ -102,7 +102,14 @@ def _held_out_avg(rec: dict, prefix: str) -> float:
 
 def _aggregate_per_alpha(records: list[dict], metric_fn,
                          group_keys: tuple[str, ...]) -> dict:
-    """{group_tuple: [(alpha, mean_value), ...] sorted by alpha}."""
+    """{group_tuple: [(alpha, mean, se, n_seeds), ...] sorted by alpha}.
+
+    `se` is the across-seed standard error (std/√n_seeds) when multiple
+    records share the same (group, alpha) — i.e. multi-seed runs. With a
+    single seed `se = 0` and `n_seeds = 1`. Plot callers can ignore the
+    extra fields (slice with `pts[:][:2]`) for backward-compat or render
+    error bars when `n_seeds > 1`.
+    """
     by: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
     for r in records:
         if "eval_error" in r:
@@ -112,14 +119,71 @@ def _aggregate_per_alpha(records: list[dict], metric_fn,
             continue
         key = tuple(r.get(k) for k in group_keys)
         by[key].append((float(r["alpha"]), v))
-    # average within each (group, alpha)
+
     out = {}
     for key, items in by.items():
         per_alpha: dict[float, list[float]] = defaultdict(list)
         for a, v in items:
             per_alpha[a].append(v)
-        out[key] = sorted((a, float(np.mean(vs))) for a, vs in per_alpha.items())
+        rows = []
+        for a, vs in per_alpha.items():
+            arr = np.asarray(vs, dtype=float)
+            mean = float(arr.mean())
+            se = float(arr.std(ddof=1) / np.sqrt(len(arr))) if len(arr) > 1 else 0.0
+            rows.append((a, mean, se, len(arr)))
+        out[key] = sorted(rows)
     return out
+
+
+def _seed_count(records: list[dict]) -> int:
+    """Distinct seeds present in the records (for headline annotations)."""
+    seeds = {r.get("seed") for r in records if r.get("seed") is not None}
+    return len(seeds) if seeds else 1
+
+
+def cross_grid_spearman(records: list[dict], x_key: str, y_key: str,
+                        n_perm: int = 1000, rng=None) -> dict:
+    """Spearman correlation between two metrics *across* the (combo × α) grid,
+    with a permutation p-value (shuffle y_key labels n_perm times).
+
+    Tests the prediction that combos with high structural fit also have high
+    semantic fit — i.e. that the two metric families track the same underlying
+    alignment quality. A near-zero correlation means structural and semantic
+    are dissociated and FGW may be solving its own objective without producing
+    a meaningful matching.
+    """
+    rng = rng or np.random.default_rng(0)
+    xs, ys = [], []
+    for r in records:
+        if "eval_error" in r:
+            continue
+        x, y = r.get(x_key), r.get(y_key)
+        if x is None or y is None:
+            continue
+        if not (np.isfinite(x) and np.isfinite(y)):
+            continue
+        xs.append(float(x)); ys.append(float(y))
+    if len(xs) < 5:
+        return {"rho": float("nan"), "p": float("nan"), "n": len(xs)}
+    xs = np.asarray(xs); ys = np.asarray(ys)
+
+    def _spearman(a, b):
+        ra = np.argsort(np.argsort(a)).astype(float)
+        rb = np.argsort(np.argsort(b)).astype(float)
+        ra -= ra.mean(); rb -= rb.mean()
+        return float((ra * rb).sum() /
+                     (np.sqrt((ra * ra).sum() * (rb * rb).sum()) + 1e-30))
+
+    rho = _spearman(xs, ys)
+    null = np.empty(n_perm)
+    for k in range(n_perm):
+        null[k] = _spearman(xs, rng.permutation(ys))
+    # two-sided p-value
+    p = float((np.abs(null) >= abs(rho)).mean())
+    return {"rho": rho, "p": p, "n": int(len(xs)),
+            "null_mean": float(null.mean()),
+            "null_lo":   float(np.quantile(null, 0.025)),
+            "null_hi":   float(np.quantile(null, 0.975))}
 
 
 def _savefig(fig, path: Path) -> None:
@@ -178,12 +242,17 @@ def plot_alpha_sweeps(records: list[dict], out_dir: Path) -> None:
             for (te, ie, ae), pts in agg.items():
                 if te != bridge or not pts:
                     continue
-                xs, ys = zip(*pts)
+                xs, ys, ses, ns = zip(*pts)
+                xs, ys, ses = np.asarray(xs), np.asarray(ys), np.asarray(ses)
                 ax.plot(xs, ys,
                         color=image_colors[ie],
                         linestyle=line_styles.get(ae, "-"),
                         marker="o", markersize=3, linewidth=1.2,
                         label=f"{ie}×{ae}")
+                # Across-seed SE band when multi-seed.
+                if max(ns) > 1:
+                    ax.fill_between(xs, ys - ses, ys + ses,
+                                    color=image_colors[ie], alpha=0.15, linewidth=0)
             ax.set_title(f"bridge: {bridge}")
             ax.set_xlabel("α")
             ax.grid(True, alpha=0.3)
@@ -626,9 +695,13 @@ def plot_geodesic_ablation(records: list[dict], out_dir: Path) -> None:
             for (te, cc), pts in agg.items():
                 if te != bridge or not pts:
                     continue
-                xs, ys = zip(*pts)
+                xs, ys, ses, ns = zip(*pts)
+                xs, ys, ses = np.asarray(xs), np.asarray(ys), np.asarray(ses)
                 ax.plot(xs, ys, color=cc_color[cc],
                         marker="o", markersize=4, linewidth=1.6, label=cc)
+                if max(ns) > 1:
+                    ax.fill_between(xs, ys - ses, ys + ses,
+                                    color=cc_color[cc], alpha=0.18, linewidth=0)
             ax.set_title(f"bridge: {bridge}")
             ax.set_xlabel("α")
             ax.grid(True, alpha=0.3)
@@ -648,9 +721,191 @@ def plot_geodesic_ablation(records: list[dict], out_dir: Path) -> None:
         _savefig(fig, out_dir / f"geodesic_ablation_{slug}.png")
 
 
+# ─── 8. struct vs semantic correlation across the grid ────────────────────
+
+# Pre-registered primary configuration (see EXPERIMENT.md §4.1).
+PRIMARY_CONFIG = {
+    "image_encoder":   "clip",
+    "audio_encoder":   "clap",
+    "text_encoder":    "clip",
+    "cost_convention": "cos_cos",
+    "caption_agg":     "mean",
+}
+
+
+def plot_struct_vs_semantic(records: list[dict], out_dir: Path,
+                            primary_recall_witness: str = "recall@1_clap"
+                            ) -> None:
+    """Structural ↔ semantic correlation across the grid, at *fixed α*.
+
+    α directly trades off GW vs W, so pooling across α produces an
+    anti-correlation that's an artifact of the FGW formulation rather than a
+    test of alignment quality. The well-posed question — "do good encoder
+    choices win on both metric families?" — is only meaningful at fixed α.
+
+    α* is chosen as the α that maximises the primary-config witness on the
+    primary configuration (default: clip×clap×clip×cos_cos×mean,
+    `recall@1_clap`). For completeness we also compute the all-α version
+    (informative about tradeoff steepness, not alignment quality).
+    """
+    if not records:
+        print("[plots] no records — skipping struct-vs-semantic diagnostic")
+        return
+
+    # Pick α* on the primary configuration: the α that maximises the chosen
+    # witness, averaged across seeds for that combo.
+    pri = [r for r in records
+           if "eval_error" not in r
+           and all(r.get(k) == v for k, v in PRIMARY_CONFIG.items())]
+    if pri:
+        per_alpha: dict[float, list[float]] = defaultdict(list)
+        for r in pri:
+            v = r.get(primary_recall_witness)
+            if v is not None and np.isfinite(v):
+                per_alpha[float(r["alpha"])].append(float(v))
+        if per_alpha:
+            alpha_star = max(per_alpha, key=lambda a: float(np.mean(per_alpha[a])))
+        else:
+            alpha_star = None
+    else:
+        alpha_star = None
+
+    struct = [
+        ("pearson_dist_corr",  "Pearson dist correlation"),
+        ("spearman_dist_corr", "Spearman dist correlation"),
+        ("triplet_agreement",  "triplet agreement"),
+    ]
+    sem = [
+        ("recall@1_lex",   "recall@1 (lex, encoder-free)"),
+        ("recall@1_t5",    "recall@1 (t5)"),
+        ("mrr_lex",        "MRR (lex)"),
+    ]
+
+    rng = np.random.default_rng(0)
+    summary: list[dict] = []
+
+    for slice_label, slice_records in (
+        ("alpha*", [r for r in records if alpha_star is not None
+                    and abs(float(r.get("alpha", -999)) - alpha_star) < 1e-9]),
+        ("all_alpha", records),
+    ):
+        if not slice_records:
+            continue
+        n_rows, n_cols = len(struct), len(sem)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.0 * n_cols, 3.6 * n_rows),
+                                 squeeze=False)
+        for i, (xk, xlab) in enumerate(struct):
+            for j, (yk, ylab) in enumerate(sem):
+                ax = axes[i, j]
+                xs, ys = [], []
+                for r in slice_records:
+                    if "eval_error" in r: continue
+                    x, y = r.get(xk), r.get(yk)
+                    if x is None or y is None: continue
+                    if not (np.isfinite(x) and np.isfinite(y)): continue
+                    xs.append(x); ys.append(y)
+                if len(xs) < 5:
+                    ax.text(0.5, 0.5, "insufficient data",
+                            ha="center", va="center", transform=ax.transAxes)
+                    ax.set_xlabel(xlab); ax.set_ylabel(ylab)
+                    continue
+                stats = cross_grid_spearman(slice_records, xk, yk, n_perm=1000, rng=rng)
+                ax.scatter(xs, ys, s=10, alpha=0.45)
+                ax.set_xlabel(xlab); ax.set_ylabel(ylab)
+                ax.set_title(f"ρ_S = {stats['rho']:+.3f}   p = {stats['p']:.3f}   n = {stats['n']}",
+                             fontsize=10)
+                ax.grid(True, alpha=0.3)
+                summary.append({"slice": slice_label, "alpha_star": alpha_star,
+                                "x": xk, "y": yk, **stats})
+        suffix = (f"α = α* = {alpha_star}" if slice_label == "alpha*" and alpha_star is not None
+                  else "all α (tradeoff dominated, not the H_FGW test)")
+        fig.suptitle(f"Structural ↔ semantic correlation — {suffix}", y=1.00)
+        _savefig(fig, out_dir / f"struct_vs_semantic_{slice_label}.png")
+
+    out_path = out_dir / "struct_vs_semantic.json"
+    with open(out_path, "w") as f:
+        json.dump({"alpha_star": alpha_star, "results": summary}, f, indent=2)
+    print(f"[plots] struct↔semantic stats → {out_path} (α* = {alpha_star})")
+
+
+# ─── 9. primary-configuration spotlight ───────────────────────────────────
+
+def plot_primary_config(records: list[dict], out_dir: Path) -> None:
+    """Headline figure: for the §4.1 pre-registered primary configuration,
+    plot FGW vs baseline vs random-π null, across α, with across-seed SE
+    bands when available. This is the figure that addresses **H_FGW**
+    directly without leaning on the exploratory leaderboard.
+    """
+    pri = [r for r in records
+           if "eval_error" not in r
+           and all(r.get(k) == v for k, v in PRIMARY_CONFIG.items())]
+    if not pri:
+        print(f"[plots] no records match primary config {PRIMARY_CONFIG} — skipping")
+        return
+
+    metrics = [
+        ("recall@1_lex",       "recall@1 (lex, encoder-free witness)"),
+        ("recall@1_t5",        "recall@1 (t5 witness — pre-registered)"),
+        ("recall@1_clap",      "recall@1 (clap witness — selection)"),
+        ("pearson_dist_corr",  "Pearson dist correlation"),
+        ("triplet_agreement",  "triplet agreement"),
+        ("entropy_norm",       "transport entropy_norm"),
+    ]
+    n = len(metrics)
+    cols = 3; rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5.0 * cols, 3.5 * rows),
+                             squeeze=False)
+    for i, (mk, lab) in enumerate(metrics):
+        ax = axes[i // cols, i % cols]
+        # FGW
+        agg = _aggregate_per_alpha(pri,
+                                   lambda r, mk=mk: float(r.get(mk, np.nan)),
+                                   ("image_encoder",))
+        for _, pts in agg.items():
+            xs, ys, ses, ns = zip(*pts)
+            xs, ys, ses = np.asarray(xs), np.asarray(ys), np.asarray(ses)
+            ax.plot(xs, ys, "o-", color="C0", linewidth=1.6, label="FGW", markersize=4)
+            if max(ns) > 1:
+                ax.fill_between(xs, ys - ses, ys + ses, color="C0", alpha=0.2)
+        # Baseline
+        bk = f"baseline_{mk}"
+        agg_b = _aggregate_per_alpha(pri,
+                                     lambda r, bk=bk: float(r.get(bk, np.nan)),
+                                     ("image_encoder",))
+        for _, pts in agg_b.items():
+            xs, ys, ses, ns = zip(*pts)
+            xs, ys, ses = np.asarray(xs), np.asarray(ys), np.asarray(ses)
+            ax.plot(xs, ys, "s--", color="C1", linewidth=1.4,
+                    label="baseline (text-only)", markersize=4)
+            if max(ns) > 1:
+                ax.fill_between(xs, ys - ses, ys + ses, color="C1", alpha=0.2)
+        # Null reference for structural metrics
+        if mk in ("pearson_dist_corr", "spearman_dist_corr"):
+            null_key = mk.replace("_dist_corr", "")
+            null_key = f"null_{null_key}_mean"
+            agg_n = _aggregate_per_alpha(pri,
+                                         lambda r, nk=null_key: float(r.get(nk, np.nan)),
+                                         ("image_encoder",))
+            for _, pts in agg_n.items():
+                xs, ys, _, _ = zip(*pts)
+                ax.plot(xs, ys, ":", color="gray", linewidth=1.2,
+                        label="random-π null")
+        ax.set_xlabel("α")
+        ax.set_ylabel(lab)
+        ax.grid(True, alpha=0.3)
+        if i == 0:
+            ax.legend(fontsize=8, loc="best")
+    cfg = " × ".join(f"{k}={v}" for k, v in PRIMARY_CONFIG.items())
+    seeds = _seed_count(pri)
+    fig.suptitle(f"Primary configuration spotlight  —  {cfg}  —  {seeds} seed(s)",
+                 fontsize=11)
+    _savefig(fig, out_dir / "primary_config.png")
+
+
 # ─── main ───────────────────────────────────────────────────────────────────
 
-_SECTIONS = ("alpha", "leaderboard", "transport", "cka", "umap", "perfcka", "geo")
+_SECTIONS = ("alpha", "leaderboard", "transport", "cka", "umap", "perfcka",
+             "geo", "diag", "primary")
 
 
 def main():
@@ -697,6 +952,10 @@ def main():
                          crossmodal_n=args.umap_n, crossmodal_seed=args.seed)
     if "geo" in sections:
         plot_geodesic_ablation(records, out_dir)
+    if "diag" in sections:
+        plot_struct_vs_semantic(records, out_dir)
+    if "primary" in sections:
+        plot_primary_config(records, out_dir)
     print(f"[plots] done — figures in {out_dir}")
 
 
