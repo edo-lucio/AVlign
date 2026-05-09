@@ -156,7 +156,7 @@ def _build_costs(z_i: torch.Tensor, z_a: torch.Tensor,
 # ─── one combination ────────────────────────────────────────────────────────
 
 def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None,
-             filter_pairs=None):
+             filter_pairs=None, solver="balanced", mass=1.0):
     img_enc, aud_enc, txt_enc, cost_conv, cap_agg = combo
     flickr_split, clotho_split = splits["flickr8k"], splits["clotho"]
 
@@ -193,10 +193,23 @@ def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None,
     p = np.full(n_i, 1.0 / n_i)
     q = np.full(n_a, 1.0 / n_a)
 
-    T, log = ot.gromov.fused_gromov_wasserstein(
-        M, C_i, C_a, p, q,
-        loss_fun="square_loss", alpha=alpha, symmetric=True, log=True,
-    )
+    if solver == "balanced":
+        T, log = ot.gromov.fused_gromov_wasserstein(
+            M, C_i, C_a, p, q,
+            loss_fun="square_loss", alpha=alpha, symmetric=True, log=True,
+        )
+        fgw_dist = float(log.get("fgw_dist", float("nan")))
+    elif solver == "partial":
+        # Partial FGW: transport only `mass` fraction of total mass — the rest
+        # is left unmatched. Lifts the bijection constraint that hurts
+        # balanced FGW on asymmetric distributions (one side has few hubs).
+        T, log = ot.gromov.partial_fused_gromov_wasserstein(
+            M, C_i, C_a, p, q,
+            m=mass, loss_fun="square_loss", alpha=alpha, log=True,
+        )
+        fgw_dist = float(log.get("partial_fgw_dist", log.get("fgw_dist", float("nan"))))
+    else:
+        raise ValueError(f"unknown solver {solver!r}")
 
     result = {
         "image_encoder": img_enc,
@@ -208,7 +221,9 @@ def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None,
         "n_audio":       int(n_a),
         "alpha":         alpha,
         "seed":          seed,
-        "fgw_dist":      float(log.get("fgw_dist", float("nan"))),
+        "solver":        solver,
+        "mass":          float(mass) if solver != "balanced" else 1.0,
+        "fgw_dist":      fgw_dist,
         "transport_entropy": float(-(T * np.log(T + 1e-30)).sum()),
         "transport_max":     float(T.max()),
     }
@@ -268,6 +283,15 @@ def main():
                          "n matched (image, audio) pairs from the filter instead "
                          "of independent uniform sampling — gives a "
                          "symmetric-coverage subset for balanced FGW.")
+    ap.add_argument("--solver", default="balanced", choices=["balanced", "partial"],
+                    help="balanced: classical FGW with uniform marginals "
+                         "(T is a permutation matrix). partial: relaxes the "
+                         "marginal constraint so only `--mass` fraction of mass "
+                         "is transported — addresses the LP-bijection penalty "
+                         "on asymmetric distributions.")
+    ap.add_argument("--mass", type=float, default=0.5,
+                    help="Total mass to transport when --solver=partial, in [0, 1]. "
+                         "Lower → more rows can be unmatched. Ignored for balanced.")
     args = ap.parse_args()
 
     img_set  = _validate_subset("image_encoders",   args.image_encoders,   IMAGE_ENCODERS)
@@ -325,7 +349,8 @@ def main():
             r = _run_one(combo, embs=embs, splits=splits,
                          n=args.n, alpha=args.alpha, seed=args.seed,
                          save_plan_dir=plan_dir,
-                         filter_pairs=filter_pairs)
+                         filter_pairs=filter_pairs,
+                         solver=args.solver, mass=args.mass)
             results.append(r)
         except Exception as e:
             results.append({
@@ -339,6 +364,7 @@ def main():
         json.dump({
             "splits": splits,
             "n": args.n, "alpha": args.alpha, "seed": args.seed,
+            "solver": args.solver, "mass": args.mass,
             "results": results,
         }, f, indent=2)
     print(f"[save] {out_path}  ({len(results)} rows)")

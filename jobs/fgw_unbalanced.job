@@ -1,0 +1,107 @@
+#!/bin/bash
+#SBATCH --job-name=fgw_unbalanced
+#SBATCH --output=logs/fgw_unbalanced_%j.out
+#SBATCH --error=logs/fgw_unbalanced_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=4:00:00
+#SBATCH --partition=scavenge
+#SBATCH --mail-user=edlu@itu.dk
+#SBATCH --mail-type=FAIL
+
+# End-to-end unbalanced (partial-FGW) experimental track:
+#   1. Sweep (image × audio × bridge × cost × caption_agg) × α × seed
+#   2. Eval all output bundles (lite mode)
+#   3. Render plots
+# All in a single SLURM allocation, with outputs dedicated to a
+# `partial_m<MASS>/` subdirectory so they don't mix with balanced runs.
+#
+# Tunables (env-var overridable):
+#   N=50            samples per side per combo
+#   MASS=0.5        partial-FGW mass fraction in [0, 1]
+#   ALPHAS=...      space-separated α grid (default: 7-point sweep)
+#   SEEDS=...       space-separated seed list (default: 0..4)
+#   EMB_DIR=...     embeddings root (default: data/embeddings)
+#   BOOTSTRAP_B=200 lite bootstrap iterations
+#   NULL_K=50       null permutations
+#   SKIP_SWEEP=1    skip step 1 (use existing results)
+#   SKIP_EVAL=1     skip step 2
+#   SKIP_PLOTS=1    skip step 3
+#
+# Usage:
+#   sbatch jobs/fgw_unbalanced.job
+#   MASS=0.7 sbatch jobs/fgw_unbalanced.job
+#   N=100 SEEDS="0 1 2" sbatch jobs/fgw_unbalanced.job
+
+set -e
+set -o pipefail
+
+# --- 1. Environment ---
+PROJECT_DIR="$HOME/flowting-fgw-v2a"
+ENV_PATH="/home/edlu/miniconda3-25-5-1-1/envs/gwot"
+
+module load CUDA/12.1.1
+module load NCCL/2.18.3-GCCcore-12.3.0-CUDA-12.1.1
+module load Miniconda3/25.5.1-1
+source /opt/itu/easybuild/software/Miniconda3/25.5.1-1/etc/profile.d/conda.sh
+conda activate "$ENV_PATH"
+cd "$PROJECT_DIR"
+
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
+# --- 2. Tunables ---
+N="${N:-50}"
+MASS="${MASS:-0.5}"
+ALPHAS="${ALPHAS:-0.0 0.1 0.25 0.5 0.75 0.9 1.0}"
+SEEDS="${SEEDS:-0 1 2 3 4}"
+EMB_DIR="${EMB_DIR:-data/embeddings}"
+
+OUT_BASE="fgw_validation/data/results/partial_m${MASS}"
+FIG_DIR="fgw_validation/data/figures/partial_m${MASS}"
+mkdir -p "$OUT_BASE"
+
+echo "[unbalanced] N=$N  MASS=$MASS  ALPHAS=$ALPHAS  SEEDS=$SEEDS"
+echo "[unbalanced] outputs → $OUT_BASE"
+echo "[unbalanced] figures → $FIG_DIR"
+
+# --- 3. Sweep ---
+if [ "${SKIP_SWEEP:-0}" != "1" ]; then
+    for SEED in $SEEDS; do
+        for ALPHA in $ALPHAS; do
+            OUT="$OUT_BASE/fgw_n${N}_a${ALPHA}_s${SEED}.json"
+            if [ -f "$OUT" ]; then
+                echo "[skip-existing] $OUT"
+                continue
+            fi
+            python -m fgw_validation.fgw_text_bridge \
+                --solver partial --mass "$MASS" \
+                --n "$N" --alpha "$ALPHA" --seed "$SEED" \
+                --emb_dir "$EMB_DIR" \
+                --flickr_split test --clotho_split development \
+                --save_plans --out "$OUT"
+        done
+    done
+fi
+
+# --- 4. Eval (lite — soft_recall@1 is included for partial T) ---
+if [ "${SKIP_EVAL:-0}" != "1" ]; then
+    python -m fgw_validation.eval \
+        --emb "$EMB_DIR" \
+        --bootstrap_B "${BOOTSTRAP_B:-200}" \
+        --null_K      "${NULL_K:-50}" \
+        --lite \
+        --results "$OUT_BASE"/fgw_n*.json
+fi
+
+# --- 5. Plots ---
+if [ "${SKIP_PLOTS:-0}" != "1" ]; then
+    python -m fgw_validation.plots \
+        --results_glob "$OUT_BASE"/fgw_n*_eval.json \
+        --emb_root "$EMB_DIR" \
+        --out_dir  "$FIG_DIR" \
+        --skip umap perfcka cka
+fi
+
+echo "[unbalanced] done."

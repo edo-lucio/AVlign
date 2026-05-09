@@ -1,379 +1,332 @@
-# FGW cross-modal alignment — results interpretation
+# FGW cross-modal alignment — multi-seed results interpretation
 
-**Data**: `fgw_validation/results/results/fgw_n200_a*_s0_eval.json`
-(7 α-values × 64 combos × 1 seed = **448 evaluated configurations**;
-n = 200 sampled per side)
-
-**Eval version**: predates the path-A changes — these JSONs carry
-`baseline_*` and bootstrap CIs, but **not** `null_*`, `lex` witness,
-`soft_recall_*`, `mrr_*`, or `median_rank_*`. To get those, re-run
-`python -m fgw_validation.eval` over the existing results files.
+**Data**: `fgw_validation/results/results/fgw_n50_a*_s*_eval.json`  
+**Scale**: 5 seeds × 7 α-values × 72 combos × 1 caption-agg/cost grid =
+**2 520 evaluated configurations** (35 eval files, lite schema).  
+**`n = 50`** sampled per side per combo.  
+**Eval module**: `lite=True`, `B=200`, `null_K=50`, `ks=[1]`, item-level
+structural bootstrap, baseline + null computed.  
+**Witnesses present**: clip, clap, roberta, t5.
+**`lex` (encoder-free) not in this run** — the raw caption files weren't
+reachable from the eval host. The encoder-correlation defense is therefore
+*not* fully closed by this data; re-running with the dataset folders
+mounted will add the encoder-free witness.
 
 ---
 
 ## TL;DR
 
-> **H_FGW (the load-bearing claim from EXPERIMENT.md §4) is falsified by this
-> data.** Across **all 448 configurations** and **all 4 held-out semantic
-> witnesses**, FGW's `recall@1` is *strictly lower* than the text-only baseline
-> — every single time. The best FGW configuration in the entire grid loses to
-> baseline by **0.020** in recall@1; the average gap is **−0.09 to −0.12**.
-> No bootstrap CI or seed-variance argument can rescue this — the entire
-> grid is on the wrong side.
+> **The pre-registered H_FGW test (primary config, `recall@1_t5` evaluated
+> at α* tuned on `recall@1_clap`) decisively fails: Δ = −0.072 ± 0.027,
+> z = −2.64.** This is a *statistically significant negative result*, not
+> just an absence-of-positive — FGW with the pre-registered primary
+> configuration is *worse than text-only retrieval beyond 2 standard errors
+> across 5 seeds*.
 
-The exploratory leaderboard, the α-sweep, and the structural metrics still
-contain useful information about *how* FGW behaves (and *why* the GW term
-hurts), but no positive claim about FGW as a cross-modal aligner is
-defensible from this data.
+The exploratory grid corroborates the negative headline at every
+disaggregation: 168/7 560 cells (2.2 %) show any FGW > baseline win, mean
+Δ = −0.11 to −0.14 per witness, and **no combo, witness, α, seed, or cost
+convention recovers a defensible positive lift after multiplicity correction.**
+
+What's new vs the prior single-seed analysis:
+
+1. The pre-registered test now has a **proper z-statistic** (multi-seed SE);
+   it lands clearly on the wrong side.
+2. Structural fit **does** exceed the random-π null at α ≥ 0.25, but **fails
+   to translate into semantic gain** at any α — the predicted dissociation
+   from EXPERIMENT.md §11(5).
+3. The geodesic ablation H_geo is **not supported**: `geo_cos` performs
+   between `cos_cos` and `cos_neg`, with no meaningful improvement.
+4. The dataset-overlap diagnostic is **brutal**: under both clip and t5
+   witnesses, **only 5–7 % of Clotho audios are anyone's argmax** (Gini
+   0.97–0.98). This is the asymmetric-coverage regime where balanced FGW
+   structurally cannot win — and it explains the size of the negative.
 
 ---
 
-## 1. The headline
+## 1. The pre-registered primary test
 
-`recall@1` averaged over the held-out witness encoders ≠ bridge:
+EXPERIMENT.md §4.1 pre-registered the configuration
+`(image=clip, audio=clap, bridge=clip, cost=cos_cos, agg=mean)` with α*
+tuned on `recall@1_clap` and evaluated on `recall@1_t5`. Across 5 seeds:
+
+| selection: `recall@1_clap` peaks at | α* = **0.25** (mean 0.136) |
+|---|---|
+| evaluation witness | `recall@1_t5` (held out from selection) |
+| FGW `recall@1_t5`        | **0.072 ± 0.021** (mean ± across-seed SE) |
+| baseline `recall@1_t5`   | **0.144 ± 0.012** |
+| Δ                         | **−0.072 ± 0.027** |
+| **z-statistic**           | **−2.64** |
+
+The decision rule from §11 was Δ > 0 at z ≥ +2. The observed z is **−2.64
+on the wrong side** — a clean rejection of H_FGW for the primary configuration.
+
+This is not a "near-miss" or "weak negative." It is the *expected* outcome
+under the alternative hypothesis "FGW is strictly worse than baseline in this
+regime," which the rest of the analysis confirms.
+
+### Primary config α-sweep (multi-seed)
+
+| α | FGW recall@1_clap | baseline | Δ | FGW pearson | null_hi |
+|---:|---:|---:|---:|---:|---:|
+| 0.00 | 0.112 ± 0.021 | 0.280 | −0.168 ± 0.032 | 0.009 | 0.110 |
+| 0.10 | 0.128 ± 0.026 | 0.280 | −0.152 ± 0.039 | 0.063 | 0.110 |
+| 0.25 | **0.136 ± 0.021** | 0.280 | −0.144 ± 0.038 | 0.148 | 0.110 |
+| 0.50 | 0.120 ± 0.017 | 0.280 | −0.160 ± 0.041 | 0.279 | 0.110 |
+| 0.75 | 0.100 ± 0.013 | 0.280 | −0.180 ± 0.047 | 0.377 | 0.110 |
+| 0.90 | 0.064 ± 0.017 | 0.280 | −0.216 ± 0.040 | 0.413 | 0.110 |
+| 1.00 | 0.016 ± 0.004 | 0.280 | −0.264 ± 0.041 | 0.446 | 0.110 |
+
+**FGW never reaches baseline at any α.** The shape of the curve is
+informative though: a shallow interior optimum at α = 0.25 (the structural
+term starts contributing without yet swamping the W signal), then steady
+decay as α grows. Pure-GW (α=1) collapses to ~chance recall (1/50 = 0.02).
+
+---
+
+## 2. Cell-by-cell exploratory grid
+
+Across all 7 560 (combo × witness) cells:
+
+| witness | n | mean Δ | std Δ | max Δ | % cells with FGW > baseline |
+|---|---:|---:|---:|---:|---:|
+| clip    | 1890 | −0.143 | 0.080 | +0.020 | 0.2 % |
+| clap    | 1890 | −0.114 | 0.092 | +0.080 | 7.6 % |
+| roberta | 1890 | −0.135 | 0.073 |  0.000 | 0.0 % |
+| t5      | 1890 | −0.110 | 0.072 | +0.020 | 1.2 % |
+| **all** | 7560 | **−0.125** | **0.080** | **+0.080** | **2.2 %** |
+
+Counts of "wins" over the grid by chance under H_0 (FGW = baseline at each
+cell, 50/50 better/worse): even with no multiplicity correction, the
+expected wins under the null is 3 780. Observed is 168 — **22× lower than
+chance** in the wrong direction. Even a generous BH correction over the grid
+yields **q = 1.0 for every claimed positive**: the apparent +0.08 win on
+`(clip × clap × roberta × cos_neg × mean, α=0.9, seed=3, witness=clap)` does
+not survive multiplicity correction because hundreds of comparable cells at
+the same nominal level produce no positive signal.
+
+### Bridge × α heatmap (Δ recall@1_avg, multi-seed mean)
 
 | bridge   | α=0.00 | α=0.10 | α=0.25 | α=0.50 | α=0.75 | α=0.90 | α=1.00 |
-|----------|-------:|-------:|-------:|-------:|-------:|-------:|-------:|
-| clap     | −0.082 | −0.083 | −0.085 | −0.088 | −0.087 | −0.087 | −0.120 |
-| clip     | −0.121 | −0.120 | −0.121 | −0.121 | −0.121 | −0.120 | −0.150 |
-| roberta  | −0.063 | −0.066 | −0.070 | −0.071 | −0.077 | −0.080 | −0.107 |
-| t5       | −0.081 | −0.081 | −0.079 | −0.081 | −0.078 | −0.081 | −0.100 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| clap     | −0.114 | −0.114 | −0.115 | −0.115 | −0.114 | −0.114 | −0.161 |
+| clip     | −0.133 | −0.133 | −0.134 | −0.134 | −0.136 | −0.142 | −0.193 |
+| roberta  | −0.104 | −0.107 | −0.115 | −0.119 | −0.124 | −0.129 | −0.175 |
+| t5       | −0.105 | −0.104 | −0.104 | −0.106 | −0.108 | −0.114 | −0.145 |
 
-(values are FGW − baseline; negative means FGW worse). The smallest gap
-anywhere in the table is **−0.063** (roberta-bridge at α=0).
-
-**Per-witness counts of FGW > baseline across the entire grid:**
-
-| witness | n combos | mean Δ | best Δ | combos with FGW > baseline |
-|---|---:|---:|---:|---:|
-| clip    | 336 | −0.118 | **−0.035** | 0 |
-| clap    | 336 | −0.091 | **−0.020** | 0 |
-| roberta | 336 | −0.085 | −0.030 | 0 |
-| t5      | 336 | −0.080 | −0.030 | 0 |
-| **all** | **1344** | **−0.094** | **−0.020** | **0 / 1344** |
-
-The single best (FGW, witness, combo, α) tuple in the entire dataset is
-`(clip × clap × roberta × cos_cos × mean, α=0.1)` with `recall@1_clap = 0.070`
-vs `baseline_recall@1_clap = 0.090` — still a loss of 0.020, on the witness
-*most favorable to* FGW.
+Smallest gap: t5-bridge at α = 0.10–0.25, Δ ≈ −0.10. Largest gap:
+clip-bridge at α = 1.0, Δ = −0.19. **No bridge × α cell beats baseline.**
 
 ---
 
-## 2. Why the α-sweep doesn't save it
+## 3. Where FGW *does* show real signal — and why it doesn't help
 
-The classic FGW story is: at α=0 you're text-only, at α=1 you're geometry-only,
-and somewhere in between is a sweet spot where the structural and semantic
-signals reinforce. The data flatly does not show this.
+### Structural fit exceeds the random-π null at α ≥ 0.25
 
-**Mean `recall@1_avg` (held-out witnesses) per bridge × α — FGW (baseline in parens):**
+| α | FGW pearson (avg) | null_pearson_hi | exceeds null? |
+|---:|---:|---:|---|
+| 0.00 | 0.034 | 0.087 | no |
+| 0.10 | 0.060 | 0.087 | no |
+| 0.25 | 0.087 | 0.087 | **borderline** |
+| 0.50 | 0.127 | 0.087 | **YES** |
+| 0.75 | 0.182 | 0.087 | **YES** |
+| 0.90 | 0.243 | 0.087 | **YES** |
+| 1.00 | 0.346 | 0.087 | **YES (4× null)** |
 
-| bridge   | α=0.00       | α=0.10       | α=0.25       | α=0.50       | α=0.75       | α=0.90       | α=1.00       |
-|----------|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|
-| clap     | 0.043 (.125) | 0.042 (.125) | 0.040 (.125) | 0.037 (.125) | 0.038 (.125) | 0.038 (.125) | 0.005 (.125) |
-| clip     | 0.035 (.157) | 0.036 (.157) | 0.036 (.157) | 0.036 (.157) | 0.036 (.157) | 0.037 (.157) | 0.007 (.157) |
-| roberta  | 0.050 (.113) | 0.048 (.113) | 0.043 (.113) | 0.043 (.113) | 0.037 (.113) | 0.034 (.113) | 0.006 (.113) |
-| t5       | 0.024 (.105) | 0.024 (.105) | 0.026 (.105) | 0.024 (.105) | 0.027 (.105) | 0.024 (.105) | 0.005 (.105) |
+The FGW structural correlation is genuinely informative — a randomly chosen
+permutation gets `pearson_dist_corr ∈ [-0.05, 0.087]` (95 % null interval),
+while FGW at α ≥ 0.5 reliably scores 2-4× above that ceiling. **The GW term
+is doing real geometric work.**
 
-Three patterns jump out:
+The catch: this geometric work **does not translate into semantic recall**.
+At α=1 (pure GW, maximal structural fit), `recall@1_avg` collapses to
+chance. FGW finds permutations that preserve intra-modal geometry but
+*pair semantically unrelated items*. This is exactly the dissociation
+predicted in EXPERIMENT.md §11(5): "if structural is high but semantic is
+low everywhere, FGW is solving its own objective without producing a
+meaningful matching." The data shows it cleanly.
 
-1. **No interior maximum.** FGW is monotonically (or near-monotonically) *worse*
-   as α grows. Adding any GW signal makes things worse, and pure GW (α=1) drives
-   semantic recall to chance level (~1/n_a = 0.005 with n=200).
-2. **Bridge ranking inverts** between FGW and baseline. Baseline ranks
-   `clip > clap > roberta > t5` (multimodally trained encoders give the best
-   `M`). FGW at low α ranks `roberta > clap > clip > t5` — *the opposite
-   ordering on `clip` and `roberta`.* FGW penalises the strongest bridges
-   most, presumably because the optimal-assignment LP (see §3) has more to
-   destroy when the row-wise greedy was already producing strong matches.
-3. **At α=0 the gap is already large** (−0.06 to −0.12). This was the most
-   surprising finding and is structural, not a bug — see §3.
+### Triplet agreement: small lift at high α
 
----
+| α | FGW triplet | baseline | Δ |
+|---:|---:|---:|---:|
+| 0.00 | 0.511 | 0.531 | −0.020 |
+| 0.50 | 0.530 | 0.531 | −0.001 |
+| 1.00 | 0.576 | 0.531 | **+0.045** |
 
-## 3. The α=0 gap is real (and changes the EXPERIMENT.md sanity-check claim)
-
-EXPERIMENT.md §7 originally claimed:
-
-> *"At α = 0, FGW minimises ⟨T, M⟩ only … π_FGW(α=0) = π_baseline (up to BCD
-> tolerance)."*
-
-This is **wrong**. The data shows FGW at α=0 differs from baseline by the same
-~0.10 gap as the higher-α points. Investigation:
-
-- `entropy_norm ≈ 0.5`, `top1_mass = 1.0`, `coverage = 1.0` at every
-  (combo, α). So FGW always converges to a **permutation matrix** (each row
-  has all mass on a single column, and every column gets used exactly once).
-- The text-only baseline `π_baseline(i) = argmax_j cos(text_i, text_j)` is a
-  **row-wise greedy retrieval** — multiple rows can map to the same column
-  (collisions allowed). This is **not** a permutation in general.
-
-So at α=0 we are comparing two different problems:
-
-| | objective | constraint on π |
-|---|---|---|
-| FGW(α=0)  | `min Σ_{i,j} T[i,j] · M[i,j]` (LP) | uniform marginals → permutation |
-| baseline  | `min_j M[i,j]` per row independently | row-wise argmax (no constraint) |
-
-These produce different π and hence different `recall@1`. **The data tells us
-that the row-wise greedy retrieval is doing something the optimal-assignment
-LP cannot do**: it's allowed to send many `i` to the same well-matched `j`
-(e.g. all dog-related Flickr8k images mapping to the same dog-bark Clotho
-clip). That's exactly the right answer when the two distributions have
-asymmetric coverage — and the size-of-loss tells us this happens a lot.
-
-**Implication for EXPERIMENT.md.** The §7 sanity check should be replaced
-with: *"at α=0, FGW(α=0) should match a Hungarian-on-M baseline (LP
-assignment), **not** the row-wise greedy baseline."* The current `baseline_*`
-columns are **the right comparison for the H_FGW question** (does FGW beat
-text-only retrieval?), but they are **not** a calibration of the FGW solver.
-A separate Hungarian-on-M baseline is needed for that.
+A genuine but small win at α=1 (~5pp above chance and above the row-wise
+greedy baseline). This is consistent with the structural-fit story: FGW's
+GW term recovers ordinal NN structure to a real but limited degree.
 
 ---
 
-## 4. Where FGW *does* win — and why it doesn't help
+## 4. The geodesic ablation (H_geo) is not supported
 
-Structural metrics (`pearson_dist_corr`, `triplet_agreement`) — by
-construction, FGW directly optimises this. Δ (FGW − baseline) on
-`pearson_dist_corr`:
+`geo_cos` is gated to (CLIP image, CLAP audio) only — the lone hyperspherical
+encoder pair. Across 280 records per cost convention on this pair:
 
-| bridge   | α=0.00 | α=0.10 | α=0.25 | α=0.50 | α=0.75 | α=0.90 | α=1.00 |
-|----------|-------:|-------:|-------:|-------:|-------:|-------:|-------:|
-| clap     | −0.13  | −0.13  | −0.12  | −0.10  | −0.04  | +0.05  | **+0.18** |
-| clip     | −0.12  | −0.11  | −0.09  | −0.05  | −0.00  | +0.03  | **+0.21** |
-| roberta  | −0.12  | −0.03  | +0.01  | +0.04  | +0.08  | +0.12  | **+0.22** |
-| t5       | −0.04  | −0.02  | +0.01  | +0.06  | +0.13  | +0.20  | **+0.28** |
+| cost convention | recall@1_avg | pearson | triplet |
+|---|---:|---:|---:|
+| `cos_cos` | 0.0569 | 0.252 | 0.557 |
+| `cos_neg` | 0.0656 | 0.154 | 0.538 |
+| `geo_cos` | 0.0620 | 0.165 | 0.537 |
 
-So FGW beats baseline on **structural fit** at α ≥ 0.5 (especially with
-text-only bridges), and dominates at α=1. This is exactly what we'd expect:
-
-- **At α=1, FGW maximizes structural fit by definition.** It finds a
-  permutation π that makes `C_a[π(i), π(j)]` look maximally like `C_i[i, j]`.
-- **But** that permutation is *semantically random* — `recall@1_avg` at α=1 is
-  0.005, indistinguishable from chance.
-
-This is the classic dissociation that we predicted in EXPERIMENT.md §11(5):
-"if structural is high but semantic is low everywhere, FGW is solving its own
-objective without producing a meaningful matching." The data shows exactly
-this dissociation at α≥0.75 — structural goes up, semantic goes down. The two
-metric families are *anticorrelated* across α, not aligned.
-
-The previous EXPERIMENT.md framing ("text-only baseline isn't fair on
-structural") was the right caveat: FGW's structural dominance at high α is
-real but mechanically guaranteed and contains no information about cross-modal
-alignment quality. The `null_pearson_*` columns from the path-A re-eval will
-ground this properly.
+`geo_cos` lands **between** `cos_cos` and `cos_neg` on every metric — no
+meaningful improvement over the chord (`cos_cos`) baseline. The
+square_loss landscape does shift (`fgw_dist` differs), but the resulting
+permutations are no better. **H_geo: not supported.** The reviewer's
+prediction (rank-based metrics are invariant to monotone rescalings, so
+geodesic distance can only matter through `square_loss` interactions) is
+borne out — the interactions are not strong enough to matter at this n.
 
 ---
 
-## 5. Differential predictions: what the ablation axes actually show
+## 5. Dataset overlap diagnostic — the structural cause
 
-### 5.1 Cost convention (cos_cos vs cos_neg) — narrow
+The new `dataset_overlap.py` reveals the regime mismatch directly. Per-image
+best-match similarity and per-audio coverage asymmetry, computed on the
+full Flickr8k (test) × Clotho (development) cross product:
 
-Mean `recall@1_avg` over the entire grid:
+| witness | median max-sim | q25 — q75 | **audios used** | Gini |
+|---|---:|---|---:|---:|
+| `clip`  | 0.813 | 0.768 — 0.854 | **7.4 %** | 0.967 |
+| `t5`    | 0.872 | 0.859 — 0.885 | **5.5 %** | 0.980 |
 
-| convention | FGW   | baseline |
-|---|---:|---:|
-| `cos_cos`  | 0.0306 | 0.1250 |
-| `cos_neg`  | 0.0323 | 0.1250 |
+Read off the right-hand columns: **only 5–7 % of Clotho audios are anyone's
+top match.** 93–95 % of the audio side is dead inventory — no Flickr8k
+image's captions point to it as the best match under either witness. The
+Gini coefficient of the per-audio argmax-count distribution is 0.97–0.98
+(0 = uniform, 1 = monopoly) — extreme concentration on a few "hub" audios.
 
-`cos_neg` is marginally better (~0.002), confirming the reviewer's claim that
-this axis buys very little. Worth folding into the exploratory leaderboard,
-not worth featuring.
+This is the asymmetric-coverage regime where **balanced FGW (uniform-marginal
+LP-assignment, permutation T) is structurally the wrong tool**:
 
-### 5.2 Caption aggregation (mean vs first) — meaningful
+- Row-wise greedy baseline: 100 images can all map to the 5 best-matching
+  audios, getting 100 correct matches.
+- Balanced FGW: forced bijection. The 5 good audios can absorb at most 5
+  images. The other 95 images are sent to *bad* matches because the
+  bijection constraint forbids reuse.
 
-| agg     | FGW   | baseline |
-|---|---:|---:|
-| `mean`  | 0.0398 | 0.1250 |
-| `first` | 0.0232 | 0.1250 |
-
-Mean-pool is ~0.017 better than using only the first caption — the only
-clear positive ablation result. This is intuitive (5 captions provide more
-information than 1) and supports the EXPERIMENT.md primary-config choice of
-`mean`.
-
-### 5.3 Image / audio encoder choice — barely matters
-
-| image  | FGW   |     | audio | FGW   |
-|---|---:|---|---|---:|
-| clip   | 0.0313 |    | clap  | 0.0313 |
-| dinov2 | 0.0317 |    | ast   | 0.0317 |
-
-Within 0.0004. The pre-registered choice of `(clip, clap)` was motivated by
-manifold geometry, not by FGW outcome — and indeed the outcome doesn't
-discriminate. This is consistent with FGW being mostly broken on this task:
-when the algorithm fails uniformly, encoder differences disappear in noise.
-
-### 5.4 Geodesic ablation (`geo_cos`) — not in this data
-
-`geo_cos` was added to the codebase later. The current results contain only
-`cos_cos` and `cos_neg`. Re-running the (CLIP, CLAP) sweep with
-`--cost_conventions geo_cos` would add 8 combos × 7 α = 56 evaluations to test
-H_geo.
+The size of the gap (Δ ≈ −0.12) is consistent with the size of the
+asymmetry: roughly 10–15 % of images "deserve" one of a small set of hub
+audios, and the LP-assignment penalty dominates exactly there. Numerically:
+baseline `recall@1_clap = 0.280` ≈ images-with-hub-match / total; FGW
+`recall@1_clap ≈ 0.13` ≈ small-fraction-of-bijection-getting-right-answer.
 
 ---
 
-## 6. Transport-plan diagnostics — uniformly degenerate
+## 6. The α = 0 "sanity check" remains fail-by-design
 
-| α | entropy_norm | top1_mass | mutual_best | coverage |
-|---|---:|---:|---:|---:|
-| 0.00 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 0.10 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 0.25 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 0.50 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 0.75 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 0.90 | 0.500 | 1.000 | 1.000 | 1.000 |
-| 1.00 | 0.500 | 1.000 | 1.000 | 1.000 |
+EXPERIMENT.md §7 originally claimed FGW(α=0) should equal baseline. The new
+data confirms again: not equal, by ~0.10–0.27 in `recall@1` per seed. As
+explained in the prior `RESULTS.md`, this is **structural** — FGW(α=0)
+solves the LP-assignment problem (permutation T, every column used once),
+while baseline does row-wise greedy retrieval (collisions allowed). Two
+different problems by design.
 
-Identical at every α. FGW always converges to a hard permutation matrix, and
-`entropy_norm = log(n) / log(n²) = 0.5` is precisely the entropy of a
-permutation under the chosen normalisation (so this isn't carrying real
-information; it's a definitional artifact). `mutual_best = coverage = 1.0`
-again indicates "permutation-matrix T, every column used once" at every α —
-the LP-assignment structure dominates regardless of how heavily we weight the
-GW vs W term.
-
-This is informative: **the FGW solver isn't getting stuck in a high-entropy
-local minimum or producing a degenerate dump-all-mass solution**. The
-optimization is working as advertised. The matchings it produces are simply
-the wrong matchings for the cross-modal-alignment task.
+**Implication unchanged from before.** EXPERIMENT.md §7 should describe the
+right α=0 calibration as: *"FGW(α=0) should match a Hungarian-on-M baseline,
+not row-wise argmax."* That separate baseline is not yet implemented — when
+it is, the calibration becomes informative again.
 
 ---
 
-## 7. What's missing from this analysis (path-A additions)
+## 7. Differential predictions: what the ablation axes show
 
-Re-running `python -m fgw_validation.eval --results fgw_validation/results/results/fgw_*_eval.json`
-(now possible since the eval module has been upgraded) would add to every combo:
+| axis | finding |
+|---|---|
+| **caption agg** | `mean` > `first` by Δ = +0.020 — mild positive ablation. |
+| **cost convention** | cos_cos / cos_neg / geo_cos all within 0.007 — no preferred convention. |
+| **image encoder** | clip vs dinov2 within 0.0004 — no effect. |
+| **audio encoder** | clap vs ast within 0.0002 — no effect. |
+| **bridge encoder** | t5 ≥ clap > roberta > clip on FGW Δ (smallest gap at t5). Inverse of the baseline ranking (clip > clap > roberta > t5 on baseline). |
 
-- **`null_pearson_*`, `null_spearman_*`** — the random-π structural null. Tells
-  us how much of the +0.21 Pearson gap at α=1 is real vs how much is
-  "permutations on isotropic spaces have ρ ≈ 0.20 by default." With n=200,
-  the null is likely tight (around 0–0.10) and FGW will exceed it at α=1, but
-  this needs to be verified, not assumed.
-- **`lex` witness** — the encoder-free Jaccard-over-captions witness. This is
-  the single most important addition: it removes the "shared web-text training
-  data" leakage concern from the held-out witnesses and gives a
-  truly-independent semantic check. If the gap is still −0.10 on `recall@1_lex`,
-  no encoder-correlation defense is available.
-- **`mrr_*`, `median_rank_*`, `soft_recall@k_*`** — robust replacements for
-  `mean_rank` (which has a heavy right tail at n=200) and a
-  T-weighted recall that doesn't collapse FGW's soft transport plan to its
-  argmax.
-- **Item-level structural bootstrap CIs** — the current `pearson_dist_corr_*`
-  CIs use pair-of-pairs resampling and are anticonservative. Re-eval will
-  replace them with proper item-level CIs.
+The bridge ranking inversion is the same finding as the prior single-seed
+analysis: stronger multimodal bridges (clip, clap) help baseline more than
+they help FGW, so FGW's gap to baseline is *largest* with the strongest
+bridges. Mechanistically: FGW's GW term overrides the bridge's signal, and
+overrides it more destructively when the bridge had more signal to begin
+with.
 
-These additions are mechanical — they don't change what the data is saying
-about H_FGW (which is already decisive at this signal level), but they sharpen
-all the secondary claims and close the easy criticism vectors.
+The flatness of image / audio / cost dimensions is informative: when an
+algorithm fails uniformly across encoder choices, encoder differences
+disappear in the noise. This is consistent with reading (9a) from the
+prior analysis: the regime is the bottleneck, not the encoder choice.
 
 ---
 
-## 8. What's missing from this *experiment* (multi-seed)
+## 8. Transport plan diagnostics — solver healthy
 
-The single-seed budget is the most important **experimental** gap. With
-n_seeds=1:
+Across all 2 520 combos:
 
-- "FGW at the best combo loses by 0.020 in recall@1" is a single-sample
-  estimate. The within-sample bootstrap CI on that combo's recall@1 is wide
-  (≈ ±0.04 at n=200, p≈0.07). On just *that single combo* the gap is not
-  bootstrap-significant.
-- However, the gap is **negative for every one of 1344 (combo × witness)
-  cells**, which is itself extremely strong evidence even without per-cell
-  CIs: under the null hypothesis "FGW = baseline on each cell with 50/50
-  better/worse," the probability of getting 0/1344 wins is `0.5^1344` —
-  vanishingly small even after multiplicity correction. So the headline
-  conclusion "**FGW is not better than baseline anywhere**" is robust to seed
-  variation, multiple comparisons, and within-sample noise. Multi-seed
-  wouldn't change this.
+| metric | value | reading |
+|---|---:|---|
+| `entropy_norm`     | 0.500 | exact value of `log(n)/log(n²)` for permutation T |
+| `top1_mass`        | 1.000 | every row puts all mass on its argmax |
+| `coverage`         | 1.000 | every column is used exactly once |
+| `mutual_best_rate` | 1.000 | T is a permutation matrix |
 
-Multi-seed *would* matter for a hypothetical "small positive lift on a
-specific combo at a specific α" — that finding would require across-seed SE
-to be defensible. We don't have such a finding here, so the multi-seed
-upgrade is currently a "nice to have for future positive results," not a
-requirement for the current negative result.
+Identical to the prior single-seed analysis. **The FGW solver is fine.** It
+finds clean permutations at every α. The matchings it produces are simply
+the wrong matchings for asymmetric distributions.
 
 ---
 
-## 9. What this means
+## 9. What this all adds up to
 
-Three readings, ordered from least to most pessimistic about FGW.
+The two strongest findings in this multi-seed run:
 
-### 9a. The narrow reading: this regime is wrong for FGW
+1. **Pre-registered H_FGW test fails at z = −2.64** — the cleanest
+   falsification possible without multi-seed SE was already strong from
+   the unfiltered single-seed grid; with multi-seed, it now meets the
+   "negative result with statistical confidence" bar.
 
-FGW with a text bridge is forced into an LP-assignment (permutation T) with
-uniform marginals. When the two distributions (Flickr8k images, Clotho audio)
-have **asymmetric semantic coverage** — i.e., many images have multiple
-plausible audio matches and many audios match no images at all — the
-optimal-assignment LP cannot exploit that asymmetry. Row-wise greedy
-retrieval can. The EXPERIMENT.md §1 framing already hinted at this ("Flickr8k
-photos may have *no* sensible audio counterpart in Clotho"). The new
-`dataset_overlap.py` diagnostic should quantify this.
+2. **The asymmetric-coverage diagnostic gives a principled mechanism**:
+   only 5–7 % of Clotho audios are anyone's top match, Gini 0.97–0.98.
+   Balanced FGW *cannot* exploit this asymmetry and pays the
+   LP-assignment penalty exactly where it hurts.
 
-If this is the right reading, the fix isn't "tune FGW better"; it's "use
-unbalanced FGW (let the marginals slip) or use a different formulation that
-allows column collisions."
-
-### 9b. The intermediate reading: bridge encoder caps the ceiling
-
-Baseline `recall@1` peaks at 0.157 (clip-bridge), which is itself low — the
-bridge encoder, given perfect access to captions on both sides, only
-correctly aligns ~16% of items at top-1. FGW's job is to add value *over*
-that ceiling. With such a low ceiling, the GW signal would have to be
-remarkably informative to outperform it. Apparently it isn't, on these
-encoder choices and these datasets.
-
-### 9c. The broad reading: the regime tested isn't FGW's use case
-
-FGW's strongest argument applies when **one side has no caption supervision**
-and a small reference-aligned subset transfers structure to the rest. By
-giving captions to both sides we hand the bridge a complete answer for free,
-and the GW term is competing against direct text-text retrieval. FGW was
-never going to win this comparison cleanly. (This was flagged in
-EXPERIMENT.md §1 after the review.)
+These two findings together support reading (9a) from the prior analysis:
+**the regime, not FGW, is the failure point.** Balanced FGW with uniform
+marginals is structurally wrong for these distribution pairs. The natural
+fix — unbalanced FGW, which permits asymmetric mass — was not tested here
+but is now well-motivated.
 
 ---
 
 ## 10. Recommended next actions
 
-In order:
+In priority order:
 
-1. **Re-eval the existing 7 result files** with the upgraded `eval.py` to
-   get `null_*`, `lex`, `mrr_*`, `soft_recall_*`, item-level CIs. Single
-   command, ~10 minutes:
-   ```bash
-   rm fgw_validation/results/results/*_eval.json
-   python -m fgw_validation.eval \
-       --results 'fgw_validation/results/results/fgw_n200_a*_s0.json' \
-       --emb fgw_validation/data/embeddings
-   ```
-   Then re-run plots — this gives `null_pearson_*` shaded bands on the
-   alpha-sweep figures and the lex-witness recalls.
+1. **Add the encoder-free `lex` witness.** This run was missing it (raw
+   captions not reachable). Re-run eval *only* (no need to redo FGW) with
+   the dataset folders accessible. Expected impact: confirms the negative
+   result is not encoder-leakage — already extremely strong evidence
+   from the 4 encoder witnesses, but lex closes the loop.
 
-2. **Run the dataset-overlap diagnostic** to quantify reading (9a):
-   ```bash
-   python -m fgw_validation.dataset_overlap --witness lex --n 1000
-   python -m fgw_validation.dataset_overlap --witness clip --n 1000
-   ```
-   The histograms will show how many Flickr8k images have *any* plausible
-   Clotho match. If the median lex-Jaccard `max_j` is < 0.05, the regime is
-   barely above chance and that contextualizes the negative H_FGW result.
+2. **Run the **filtered** sweep** (using `jobs/fgw_build_filter.job` then
+   `FILTER_INDICES=...`). The MNN-filtered subset gives balanced FGW a
+   fair shot. The smoke test at n=50 already showed this regime change
+   bumps absolute baseline `recall@1` from 0.13 → 0.38 — i.e. the ceiling
+   rises dramatically, and FGW gets some of that lift but still loses by
+   a similar absolute margin (~0.10) to baseline on independent witnesses.
+   The full multi-seed filtered run will tell whether *that* gap closes
+   under symmetric coverage.
 
-3. **Add a Hungarian-on-M baseline** to `eval.py` (~30 lines) so the α=0
-   sanity check is well-defined. This isolates the "is the FGW LP itself
-   solving correctly?" question from "does the LP-assignment beat row-wise
-   retrieval?".
+3. **Try unbalanced FGW** (`ot.unbalanced.fused_unbalanced_gromov_wasserstein`
+   or `ot.partial.partial_fused_gromov_wasserstein`). With KL-divergence
+   penalties on marginal residuals instead of hard uniform constraints,
+   multiple images can map to the same hub audio — the matching can
+   replicate what row-wise greedy is doing, while also using the GW term.
+   This is the principled fix to the LP-assignment problem and the most
+   promising path to a positive result on the unfiltered data.
 
-4. **Decide whether to invest in unbalanced FGW** (`ot.gromov.entropic_fgw_*`
-   with non-uniform marginals, or POT's `gromov_wasserstein_partial`). This
-   is the only path-of-least-effort modification that could change the
-   headline. If the dataset-overlap diagnostic in (2) shows asymmetric
-   coverage, this is well-motivated.
-
-5. **Otherwise**: write up the negative result honestly. The infrastructure
-   built here (the falsifiable test, the encoder-free witness, the structural
-   null, the multi-seed protocol) is reusable and worth publishing as the
-   contribution even if FGW itself is not the headline. A clean "we built a
-   careful eval and FGW failed it" paper is more valuable than a positive
-   result that wouldn't survive the review questions in
-   EXPERIMENT.md §11.
+4. **Otherwise: write up the negative result honestly.** The infrastructure
+   is now fully publishable: pre-registered test, multi-seed SE,
+   item-level bootstrap, structural null, encoder-free witness (once
+   added), dataset-overlap diagnostic with coverage-asymmetry. A clean
+   "we built a falsifiable evaluation pipeline and balanced FGW failed it,
+   here's the principled mechanism via asymmetric coverage, and here's
+   the unbalanced-FGW alternative we propose for future work" is a more
+   defensible contribution than any contrived positive on this regime
+   would be.

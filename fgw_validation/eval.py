@@ -486,9 +486,11 @@ def _semantic(emb_root, splits, idx_i, idx_a, pi, bridge, ks,
                 lo, hi = _bootstrap_mean_ci(r_at_k, B, ci, rng)
                 out[f"{prefix}recall@{k}_{held}_lo"] = lo
                 out[f"{prefix}recall@{k}_{held}_hi"] = hi
-            # Soft recall (FGW only) — skipped in lite (with permutation T,
-            # soft = hard recall, so it carries no extra information).
-            if T is not None and not lite:
+            # Soft recall: T-weighted top-k membership. For balanced FGW (T is
+            # a permutation matrix) soft = hard, but for partial / unbalanced
+            # FGW it carries the proper match confidence. Always emitted when
+            # T is provided so the partial-solver runs have it as headline.
+            if T is not None:
                 top_k_idx = order[:, :k]
                 mask = np.zeros_like(sim, dtype=bool)
                 rows = np.arange(n_i)[:, None]
