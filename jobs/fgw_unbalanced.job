@@ -96,9 +96,12 @@ if [ "${SKIP_EVAL:-0}" != "1" ]; then
 fi
 
 # --- 5. Plots ---
+# Note: --results_glob takes a single literal glob string (Python expands it
+# internally via glob.glob), so we must quote the whole pattern to prevent
+# the shell from expanding it first.
 if [ "${SKIP_PLOTS:-0}" != "1" ]; then
     python -m fgw_validation.plots \
-        --results_glob "$OUT_BASE"/fgw_n*_eval.json \
+        --results_glob "${OUT_BASE}/fgw_n*_eval.json" \
         --emb_root "$EMB_DIR" \
         --out_dir  "$FIG_DIR" \
         --skip umap perfcka cka
