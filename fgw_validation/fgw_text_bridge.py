@@ -155,7 +155,8 @@ def _build_costs(z_i: torch.Tensor, z_a: torch.Tensor,
 
 # ─── one combination ────────────────────────────────────────────────────────
 
-def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None):
+def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None,
+             filter_pairs=None):
     img_enc, aud_enc, txt_enc, cost_conv, cap_agg = combo
     flickr_split, clotho_split = splits["flickr8k"], splits["clotho"]
 
@@ -166,10 +167,21 @@ def _run_one(combo, *, embs, splits, n, alpha, seed, save_plan_dir=None):
 
     # Same seed -> same items selected across every combination.
     rng = np.random.default_rng(seed)
-    n_i = min(n, len(img["ids"]))
-    n_a = min(n, len(aud["ids"]))
-    idx_i = rng.choice(len(img["ids"]), n_i, replace=False)
-    idx_a = rng.choice(len(aud["ids"]), n_a, replace=False)
+    if filter_pairs is not None:
+        # Symmetric MNN-filtered subset: sample n matched (i, j) pairs.
+        # n_i = n_a = n, and every column gets used exactly once → fair
+        # for balanced-FGW LP-assignment. See build_filter.py.
+        n_eff = min(n, len(filter_pairs))
+        order = rng.permutation(len(filter_pairs))[:n_eff]
+        chosen = np.asarray(filter_pairs)[order]
+        idx_i = chosen[:, 0].astype(np.int64)
+        idx_a = chosen[:, 1].astype(np.int64)
+        n_i = n_a = n_eff
+    else:
+        n_i = min(n, len(img["ids"]))
+        n_a = min(n, len(aud["ids"]))
+        idx_i = rng.choice(len(img["ids"]), n_i, replace=False)
+        idx_a = rng.choice(len(aud["ids"]), n_a, replace=False)
 
     z_i = img["emb"][idx_i]
     z_a = aud["emb"][idx_a]
@@ -251,6 +263,11 @@ def main():
                     help="Default: <data_root>/fgw_results.json")
     ap.add_argument("--save_plans", action="store_true",
                     help="Also dump each transport plan as .npz next to --out")
+    ap.add_argument("--filter_indices", default=None,
+                    help="Path to a build_filter.py JSON. When set, FGW samples "
+                         "n matched (image, audio) pairs from the filter instead "
+                         "of independent uniform sampling — gives a "
+                         "symmetric-coverage subset for balanced FGW.")
     args = ap.parse_args()
 
     img_set  = _validate_subset("image_encoders",   args.image_encoders,   IMAGE_ENCODERS)
@@ -266,6 +283,19 @@ def main():
                  if args.save_plans else None)
 
     splits = {"flickr8k": args.flickr_split, "clotho": args.clotho_split}
+
+    filter_pairs = None
+    if args.filter_indices:
+        with open(args.filter_indices) as f:
+            flt = json.load(f)
+        if flt.get("splits") != splits:
+            raise SystemExit(
+                f"--filter_indices splits {flt.get('splits')} do not match "
+                f"current splits {splits}; rebuild the filter or change splits."
+            )
+        filter_pairs = flt["pairs"]
+        print(f"[filter] {flt.get('strategy', '?')} on witness={flt.get('witness')}: "
+              f"{len(filter_pairs)} pairs available")
 
     # Drop combos that fail the cost-convention manifold gate (geo_cos is
     # only valid when both image and audio encoders share a contrastive
@@ -294,7 +324,8 @@ def main():
         try:
             r = _run_one(combo, embs=embs, splits=splits,
                          n=args.n, alpha=args.alpha, seed=args.seed,
-                         save_plan_dir=plan_dir)
+                         save_plan_dir=plan_dir,
+                         filter_pairs=filter_pairs)
             results.append(r)
         except Exception as e:
             results.append({

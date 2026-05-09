@@ -15,7 +15,13 @@ N=${1:-200}
 ALPHA=${2:-0.5}
 SEED=${3:-0}
 # Distinct per-(n, alpha, seed) so concurrent sweep jobs don't clobber each other.
-OUT="${4:-fgw_validation/data/results/fgw_n${N}_a${ALPHA}_s${SEED}.json}"
+# Filtered runs land under `results/filtered_<filter-basename>/` so they don't
+# mix with unfiltered headline results when downstream globs.
+OUT_SUBDIR=""
+if [ -n "${FILTER_INDICES:-}" ]; then
+    OUT_SUBDIR="filtered_$(basename "${FILTER_INDICES}" .json)/"
+fi
+OUT="${4:-fgw_validation/data/results/${OUT_SUBDIR}fgw_n${N}_a${ALPHA}_s${SEED}.json}"
 
 set -e
 set -x
@@ -40,11 +46,22 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 # manifold gate keeps `geo_cos` to (CLIP image, CLAP audio) only — the only
 # encoder pair sharing a contrastive InfoNCE-trained hypersphere.
 # (32 cos_cos + 32 cos_neg + 8 geo_cos = 72.)
+#
+# Optional MNN-filtered run: if FILTER_INDICES env var points to a JSON
+# produced by `fgw_validation.build_filter`, FGW samples `n` matched pairs
+# from the filter instead of independent uniform sampling — gives a
+# symmetric-coverage subset where balanced FGW has a fair chance.
 mkdir -p "$(dirname "$OUT")"
+FILTER_FLAG=""
+if [ -n "${FILTER_INDICES:-}" ]; then
+    FILTER_FLAG="--filter_indices ${FILTER_INDICES}"
+    echo "[experiments] using filter: ${FILTER_INDICES}"
+fi
 python -m fgw_validation.fgw_text_bridge \
     --n "$N" \
     --alpha "$ALPHA" \
     --seed "$SEED" \
     --emb_dir "${EMB_DIR:-data/embeddings}" \
     --save_plans \
-    --out "$OUT"
+    --out "$OUT" \
+    $FILTER_FLAG
