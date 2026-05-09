@@ -39,11 +39,18 @@ EMB_DIR="${EMB_DIR:-data/embeddings}"
 # BOOTSTRAP_B controls within-seed CIs (default 1000); NULL_K controls the
 # random-π structural null reference (default 200). Set to 0 to skip either.
 RESULTS_GLOB="${RESULTS_GLOB:-fgw_validation/data/results/fgw_*.json}"
+# LITE=1 (default) keeps only the H_FGW headline metrics: recall@1+CI, mrr,
+# pearson+CI+null, triplet, transport. Set LITE=0 to compute everything.
+LITE_FLAG=""
+if [ "${LITE:-1}" = "1" ]; then
+    LITE_FLAG="--lite"
+fi
 if [ "${SKIP_EVAL:-0}" != "1" ]; then
     python -m fgw_validation.eval \
         --emb "$EMB_DIR" \
-        --bootstrap_B "${BOOTSTRAP_B:-1000}" \
-        --null_K      "${NULL_K:-200}" \
+        --bootstrap_B "${BOOTSTRAP_B:-200}" \
+        --null_K      "${NULL_K:-50}" \
+        $LITE_FLAG \
         --results $RESULTS_GLOB
 fi
 
