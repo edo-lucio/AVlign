@@ -29,12 +29,46 @@ cd "$PROJECT_DIR"
 
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-# Evaluates each combination's transport plan: semantic recall@k against
-# held-out caption encoders, structural distance correlations, triplet
-# preservation, and transport plan stats. Reads fgw_results.json + plans/.
+EMB_DIR="${EMB_DIR:-data/embeddings}"
+
+# --- 3. Evaluate ----------------------------------------------------------
 # RESULTS_GLOB matches every fgw_*.json the experiments sweep produced; the
-# script filters out *_eval.json so re-runs don't re-evaluate prior outputs.
+# eval script filters out *_eval.json so re-runs don't re-process its own
+# outputs.  Set SKIP_EVAL=1 to skip and only render plots.
 RESULTS_GLOB="${RESULTS_GLOB:-fgw_validation/data/results/fgw_*.json}"
-python -m fgw_validation.eval \
-    --emb "${EMB_DIR:-data/embeddings}" \
-    --results $RESULTS_GLOB
+if [ "${SKIP_EVAL:-0}" != "1" ]; then
+    python -m fgw_validation.eval \
+        --emb "$EMB_DIR" \
+        --results $RESULTS_GLOB
+fi
+
+# --- 4. Pairwise CKA on canonical (dataset, split, modality) targets ------
+# These feed the CKA heatmaps and the perf-vs-CKA scatters. `|| true` so a
+# missing modality (e.g. fewer than two encoders present) doesn't abort the
+# job. Set SKIP_CKA=1 to skip.
+if [ "${SKIP_CKA:-0}" != "1" ]; then
+    CKA_N="${CKA_N:-1000}"
+    for MOD in image text; do
+        python -m fgw_validation.cka --dataset flickr8k --split test \
+            --modality "$MOD" --kernel linear --n "$CKA_N" \
+            --emb_root "$EMB_DIR" || true
+    done
+    python -m fgw_validation.cka --dataset flickr8k --split test \
+        --modality text --kernel rbf --n "$CKA_N" \
+        --emb_root "$EMB_DIR" || true
+    for MOD in audio text; do
+        python -m fgw_validation.cka --dataset clotho --split development \
+            --modality "$MOD" --kernel linear --n "$CKA_N" \
+            --emb_root "$EMB_DIR" || true
+    done
+fi
+
+# --- 5. Render figures ----------------------------------------------------
+# Six families: alpha curves, leaderboard heatmaps, transport diagnostics,
+# CKA heatmaps, UMAPs (umap-learn optional), perf-vs-CKA scatters.
+# Output: fgw_validation/data/figures/*.png  (override with FIG_DIR=...).
+if [ "${SKIP_PLOTS:-0}" != "1" ]; then
+    python -m fgw_validation.plots \
+        --emb_root "$EMB_DIR" \
+        --out_dir  "${FIG_DIR:-fgw_validation/data/figures}"
+fi

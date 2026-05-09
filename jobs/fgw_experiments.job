@@ -35,8 +35,11 @@ cd "$PROJECT_DIR"
 
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-# Runs all 64 (image × audio × text-bridge × cost × caption_agg) combinations
-# of the FGW alignment and saves transport plans for downstream eval.
+# Runs all 72 (image × audio × text-bridge × cost × caption_agg) combinations
+# of the FGW alignment and saves transport plans for downstream eval. The
+# manifold gate keeps `geo_cos` to (CLIP image, CLAP audio) only — the only
+# encoder pair sharing a contrastive InfoNCE-trained hypersphere.
+# (32 cos_cos + 32 cos_neg + 8 geo_cos = 72.)
 mkdir -p "$(dirname "$OUT")"
 python -m fgw_validation.fgw_text_bridge \
     --n "$N" \

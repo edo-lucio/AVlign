@@ -12,10 +12,21 @@ then runs Fused Gromov-Wasserstein. Sweeps any subset of:
     image encoder      ∈ {clip, dinov2}
     audio encoder      ∈ {clap, ast}
     text bridge        ∈ {clip, clap, roberta, t5}     (same model both sides)
-    cost convention    ∈ {cos_cos, cos_neg}            (see _build_costs)
+    cost convention    ∈ {cos_cos, cos_neg, geo_cos}   (see _build_costs)
     caption aggregation∈ {mean, first}
 
-64 combinations total. CLI:
+`geo_cos` is gated to (image, audio) pairs whose encoders share a
+contrastive InfoNCE-trained hypersphere — currently only (clip, clap).
+For other pairs the geodesic distance is meaningless, so those combos are
+silently dropped from the sweep. With the default sets this yields:
+
+      cos_cos  : 2 × 2 × 4 × 2  = 32 combos
+      cos_neg  : 2 × 2 × 4 × 2  = 32 combos
+      geo_cos  : 1 × 1 × 4 × 2  =  8 combos
+                                  ──
+                                  72 total.
+
+CLI:
 
     python -m fgw_validation.fgw_text_bridge --n 200
     python -m fgw_validation.fgw_text_bridge --image_encoders clip \\
@@ -36,8 +47,24 @@ from tqdm import tqdm
 IMAGE_ENCODERS    = ("clip", "dinov2")
 AUDIO_ENCODERS    = ("clap", "ast")
 TEXT_ENCODERS     = ("clip", "clap", "roberta", "t5")
-COST_CONVENTIONS  = ("cos_cos", "cos_neg")
+COST_CONVENTIONS  = ("cos_cos", "cos_neg", "geo_cos")
 CAPTION_AGGS      = ("mean", "first")
+
+# Encoders trained with a contrastive InfoNCE on L2-normalized features —
+# their embeddings live on a unit hypersphere where geodesic distance is
+# meaningful. `geo_cos` is only emitted for combos where BOTH the image and
+# audio encoders are in this set; for non-contrastive encoders (DINOv2 image,
+# AST audio) the spherical structure is just imposed and arccos(⟨·,·⟩) is
+# not a principled cost.
+HYPERSPHERICAL_ENCODERS = frozenset({"clip", "clap"})
+
+
+def _combo_is_valid(img_enc: str, aud_enc: str, cost_conv: str) -> bool:
+    """`geo_cos` only fires when both image and audio encoders share a
+    contrastively-trained hypersphere; other combos are dropped from the sweep."""
+    if cost_conv == "geo_cos":
+        return img_enc in HYPERSPHERICAL_ENCODERS and aud_enc in HYPERSPHERICAL_ENCODERS
+    return True
 
 # Sizes must match what `fgw_validation.encode` actually wrote to disk.
 _SIZE_PER_ENCODER = {
@@ -86,26 +113,42 @@ def _build_costs(z_i: torch.Tensor, z_a: torch.Tensor,
                  convention: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Returns (C_i, C_a, M) as float64 numpy arrays for POT.
 
-    Both conventions share C_i and C_a as cosine-distance Gram matrices on the
-    L2-normalized image / audio embeddings. They differ in M:
+    Conventions:
 
-      cos_cos: M = 1 - cos(T_i, T_a)   (cost in [0, 2], scale-aligned with C)
-      cos_neg: M = -(T_i T_a^T)        (raw inner-product, sign-flipped so FGW
-                                        can minimize)
+      cos_cos:  C = 1 − cos(z, z)    on [0, 2]   (chord on unit sphere)
+                M = 1 − cos(T_i, T_a) on [0, 2]
+      cos_neg:  C = 1 − cos(z, z)    on [0, 2]
+                M = −⟨T_i, T_a⟩      raw (sign-flipped so FGW minimizes)
+      geo_cos:  C = arccos(cos)/π     on [0, 1]   (geodesic on S^{d−1},
+                                                   rescaled for parity with cos_cos)
+                M = 1 − cos(T_i, T_a) on [0, 2]
+                ⟨ gated to (image, audio) pairs in HYPERSPHERICAL_ENCODERS ⟩
+
+    `geo_cos` is only meaningful when both source spaces are contrastive
+    hyperspheres; the sweep drops other combos via `_combo_is_valid`.
     """
     z_i_n = _l2norm(z_i)
     z_a_n = _l2norm(z_a)
-    C_i = (1.0 - z_i_n @ z_i_n.T).clamp(min=0).cpu().numpy()
-    C_a = (1.0 - z_a_n @ z_a_n.T).clamp(min=0).cpu().numpy()
 
-    if convention == "cos_cos":
+    if convention in ("cos_cos", "cos_neg"):
+        C_i = (1.0 - z_i_n @ z_i_n.T).clamp(min=0).cpu().numpy()
+        C_a = (1.0 - z_a_n @ z_a_n.T).clamp(min=0).cpu().numpy()
+    elif convention == "geo_cos":
+        # arccos has divergent gradient at ±1 — clamp before applying it.
+        eps = 1e-7
+        cos_i = (z_i_n @ z_i_n.T).clamp(-1.0 + eps, 1.0 - eps)
+        cos_a = (z_a_n @ z_a_n.T).clamp(-1.0 + eps, 1.0 - eps)
+        C_i = (torch.arccos(cos_i) / torch.pi).cpu().numpy()
+        C_a = (torch.arccos(cos_a) / torch.pi).cpu().numpy()
+    else:
+        raise ValueError(f"unknown cost convention {convention!r}")
+
+    if convention in ("cos_cos", "geo_cos"):
         t_i_n = _l2norm(t_i)
         t_a_n = _l2norm(t_a)
         M = (1.0 - t_i_n @ t_a_n.T).clamp(min=0).cpu().numpy()
     elif convention == "cos_neg":
         M = -(t_i @ t_a.T).cpu().numpy()
-    else:
-        raise ValueError(f"unknown cost convention {convention!r}")
 
     return C_i.astype(np.float64), C_a.astype(np.float64), M.astype(np.float64)
 
@@ -224,9 +267,16 @@ def main():
 
     splits = {"flickr8k": args.flickr_split, "clotho": args.clotho_split}
 
-    # Pre-load every embedding tensor we'll touch, once.
+    # Drop combos that fail the cost-convention manifold gate (geo_cos is
+    # only valid when both image and audio encoders share a contrastive
+    # hypersphere).
+    all_combos = list(itertools.product(img_set, aud_set, txt_set, cc_set, cap_set))
+    combos = [c for c in all_combos if _combo_is_valid(c[0], c[1], c[3])]
+    skipped = len(all_combos) - len(combos)
+
+    # Pre-load every embedding tensor that surviving combos will touch.
     needed: set[tuple[str, str, str, str]] = set()
-    for img, aud, txt, _, _ in itertools.product(img_set, aud_set, txt_set, cc_set, cap_set):
+    for img, aud, txt, _, _ in combos:
         needed.add(("flickr8k", splits["flickr8k"], img, "image"))
         needed.add(("flickr8k", splits["flickr8k"], txt, "text"))
         needed.add(("clotho",   splits["clotho"],   aud, "audio"))
@@ -234,8 +284,10 @@ def main():
     embs = {tup: _load(_emb_path(emb_root, *tup)) for tup in sorted(needed)}
     print(f"[load] {len(embs)} embedding tensors")
 
-    combos = list(itertools.product(img_set, aud_set, txt_set, cc_set, cap_set))
-    print(f"[run] {len(combos)} combinations, n={args.n}, alpha={args.alpha}, seed={args.seed}")
+    msg = f"[run] {len(combos)} combinations, n={args.n}, alpha={args.alpha}, seed={args.seed}"
+    if skipped:
+        msg += f"  ({skipped} dropped by cost-convention manifold gate)"
+    print(msg)
 
     results = []
     for combo in tqdm(combos, desc="FGW"):
